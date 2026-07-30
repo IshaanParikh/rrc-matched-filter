@@ -1,0 +1,32 @@
+# Simulation build artifacts
+build/
+*.vvp
+*.vcd
+
+# Generated stimulus, golden vectors and captured output.
+# Everything here is reproducible: ./sim/run_sim.sh regenerates it from a fixed
+# PRNG seed, so it is deliberately not tracked.
+data/
+data_clean/
+data_corner/
+
+# Quartus
+syn/output/
+syn/db/
+syn/incremental_db/
+syn/qdb/
+syn/*.qpf
+syn/*.qsf
+syn/*.qws
+syn/*.rpt
+syn/*.summary
+syn/*.sof
+syn/*.pin
+syn/*.jdi
+syn/*.done
+syn/*.smsg
+
+# Python
+__pycache__/
+*.pyc
+.venv/

@@ -1,40 +1,19 @@
-//============================================================================
-// rrc_fir_core -- one real-valued channel of the RRC matched filter.
+// one real channel of the RRC matched filter
 //
-//   din -> [ N_TAPS-deep delay line ]
-//              |  |  |         (one tap per stage)
-//              v  v  v
-//          [ N_TAPS pipelined radix-4 Booth multipliers ]
-//              |  |  |
-//              v  v  v
-//          [ pipelined adder tree, ceil(log2(N)) levels ]
-//                   |
-//                   v
-//          [ round-half-up -> saturate -> register ] -> dout
+//   din -> 33-tap delay line -> 33 booth multipliers -> adder tree
+//       -> round half up -> saturate -> dout
 //
-// Bit growth
-// ----------
-//   din, coeff        Q1.15   16 bits
-//   product           Q2.30   32 bits            (16 x 16)
-//   accumulator       Q8.30   32 + ceil(log2(33)) = 38 bits
-//   dout              Q1.15   16 bits            ((acc + 2^14) >>> 15, saturated)
+// widths: din/coeff Q1.15 (16b), product Q2.30 (32b), accumulator Q8.30 (38b),
+// dout Q1.15 (16b). worst case accumulator is 33 * 2^15 * 2^15 = 2^35.04,
+// needs 37 bits, we have 38 so it can't wrap.
 //
-// 38 bits is 1 bit more than the 37 the worst case actually needs
-// (33 * 2^15 * 2^15 = 2^36.05), so the accumulator provably cannot wrap.
-//
-// Two enables, not one
-// --------------------
-//   sample_en : admit a new sample into the delay line
-//   pipe_en   : advance every arithmetic pipeline register
-//
-// They differ when the stream has a gap (upstream not valid, downstream ready).
-// The delay line must hold -- feeding it a bubble would corrupt the filter
-// history -- while the arithmetic pipeline must keep advancing so in-flight
-// results can drain to the output.  The bubbles that result carry garbage
-// products, but the top level's valid pipeline marks them invalid, so nothing
-// downstream ever sees them.  The reverse case cannot happen: the top level
-// derives sample_en as (tvalid & pipe_en), so sample_en implies pipe_en.
-//============================================================================
+// two enables:
+//   sample_en - load a new sample into the delay line
+//   pipe_en   - advance the arithmetic pipeline
+// they differ on a gap in the stream (source idle, sink ready): the delay
+// line has to hold or it corrupts the filter history, but the arithmetic
+// pipeline keeps moving so in-flight results can drain. the bubbles carry
+// garbage but the top level marks them invalid.
 `timescale 1ns / 1ps
 `include "rrc_defs.vh"
 
@@ -45,27 +24,24 @@ module rrc_fir_core #(
     parameter COEFF_FILE  = "data/rrc_coeffs.hex"
 ) (
     input  wire                         clk,
-    input  wire                         rst_n,       // synchronous, active low
-    input  wire                         sample_en,   // advance the delay line
-    input  wire                         pipe_en,     // advance the arithmetic pipeline
+    input  wire                         rst_n,       // sync, active low
+    input  wire                         sample_en,   // advance delay line
+    input  wire                         pipe_en,     // advance arithmetic pipe
     input  wire signed [DATA_WIDTH-1:0] din,
     output wire signed [DATA_WIDTH-1:0] dout
 );
 
-    localparam PROD_WIDTH  = DATA_WIDTH + COEFF_WIDTH;        // 32
-    localparam TREE_LEVELS = `RRC_CLOG2(N_TAPS);              // 6
-    localparam ACC_WIDTH   = PROD_WIDTH + TREE_LEVELS;        // 38
-    localparam FRAC_BITS   = `RRC_FRAC_BITS;                  // 15
-    localparam SHIFT_W     = ACC_WIDTH - FRAC_BITS;           // 23
+    localparam PROD_WIDTH  = DATA_WIDTH + COEFF_WIDTH;
+    localparam TREE_LEVELS = `RRC_CLOG2(N_TAPS);
+    localparam ACC_WIDTH   = PROD_WIDTH + TREE_LEVELS;
+    localparam FRAC_BITS   = `RRC_FRAC_BITS;
+    localparam SHIFT_W     = ACC_WIDTH - FRAC_BITS;
 
-    // delay line (1) + Booth multiplier (4) + adder tree (6) + output reg (1)
+    // delay line (1) + booth (4) + tree (6) + output reg (1)
     localparam LATENCY = 1 + `BOOTH_R4_LATENCY + TREE_LEVELS + 1;
 
-    // ---------------------------------------------------------------------
-    // Delay line.  No initial value and a synchronous reset, so the outputs
-    // are X at power-up in simulation until reset clears the pipeline -- the
-    // X-propagation check the testbench relies on.
-    // ---------------------------------------------------------------------
+    // delay line. no initial value + sync reset, so it's X at power-up
+    // until reset clears it - the testbench checks for that.
     reg signed [DATA_WIDTH-1:0] shift_reg [0:N_TAPS-1];
 
     integer t;
@@ -74,15 +50,12 @@ module rrc_fir_core #(
             for (t = 0; t < N_TAPS; t = t + 1)
                 shift_reg[t] <= {DATA_WIDTH{1'b0}};
         end else if (sample_en) begin
-            shift_reg[0] <= din;                      // newest sample
+            shift_reg[0] <= din;
             for (t = 1; t < N_TAPS; t = t + 1)
                 shift_reg[t] <= shift_reg[t-1];
         end
     end
 
-    // ---------------------------------------------------------------------
-    // Coefficients.
-    // ---------------------------------------------------------------------
     wire [N_TAPS*COEFF_WIDTH-1:0] coeff_flat;
 
     rrc_coeff_rom #(
@@ -93,9 +66,7 @@ module rrc_fir_core #(
         .coeff_flat (coeff_flat)
     );
 
-    // ---------------------------------------------------------------------
-    // One pipelined Booth MAC per tap.
-    // ---------------------------------------------------------------------
+    // one booth MAC per tap
     wire [N_TAPS*PROD_WIDTH-1:0] prod_flat;
 
     genvar k;
@@ -119,9 +90,6 @@ module rrc_fir_core #(
         end
     endgenerate
 
-    // ---------------------------------------------------------------------
-    // Adder tree.
-    // ---------------------------------------------------------------------
     wire signed [ACC_WIDTH-1:0] acc;
 
     pipelined_adder_tree #(
@@ -135,27 +103,22 @@ module rrc_fir_core #(
         .dout     (acc)
     );
 
-    // ---------------------------------------------------------------------
-    // Round half up, then saturate, then register.
-    //
-    // rnd_const is declared as a signed vector rather than written as
-    // (1 << 14): an unsigned literal would make the whole addition unsigned
-    // and silently break the arithmetic for negative accumulators.
-    // ---------------------------------------------------------------------
+    // round half up, saturate, register
+    // rnd_const is a signed vector, not (1 << 14) - an unsigned literal would
+    // make the add unsigned and break negative accumulators
     wire signed [ACC_WIDTH-1:0] rnd_const =
-        {{(ACC_WIDTH-FRAC_BITS){1'b0}}, 1'b1, {(FRAC_BITS-1){1'b0}}};   // +2^14
+        {{(ACC_WIDTH-FRAC_BITS){1'b0}}, 1'b1, {(FRAC_BITS-1){1'b0}}};
 
     wire signed [ACC_WIDTH-1:0] acc_rnd = acc + rnd_const;
     wire signed [SHIFT_W-1:0]   y_full  = acc_rnd >>> FRAC_BITS;
 
-    // y_full fits in DATA_WIDTH bits iff its top (SHIFT_W-DATA_WIDTH+1) bits
-    // are all copies of the sign bit.
+    // fits in 16 bits only if everything above bit 15 matches the sign bit
     wire [SHIFT_W-DATA_WIDTH : 0] guard = y_full[SHIFT_W-1 : DATA_WIDTH-1];
     wire                          ovf   = ~((&guard) | (~|guard));
 
     wire signed [DATA_WIDTH-1:0] y_sat =
-        ovf ? (y_full[SHIFT_W-1] ? {1'b1, {(DATA_WIDTH-1){1'b0}}}     // -1.0
-                                 : {1'b0, {(DATA_WIDTH-1){1'b1}}})    // +1.0 - 2^-15
+        ovf ? (y_full[SHIFT_W-1] ? {1'b1, {(DATA_WIDTH-1){1'b0}}}
+                                 : {1'b0, {(DATA_WIDTH-1){1'b1}}})
             : y_full[DATA_WIDTH-1:0];
 
     reg signed [DATA_WIDTH-1:0] dout_r;

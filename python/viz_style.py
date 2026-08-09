@@ -1,19 +1,9 @@
-"""
-Shared matplotlib styling.
-
-Colors are the reference data-viz palette, used unchanged: categorical slot 1
-(blue) and slot 2 (orange), plus the documented chrome/ink roles.  That subset
-is documented as clearing the strict all-pairs gate on the light surface
-(CVD dE 9.2, normal-vision dE 24.0), which is what scatter forms require.
-
-Figures render on the light surface only: they are static PNGs checked into the
-repository for the README, and a theme-reactive variant is not something a PNG
-can carry.
-"""
+"""shared matplotlib styling, light surface only since these are static
+PNGs for the README"""
 
 import matplotlib as mpl
 
-# --- palette roles ----------------------------------------------------------
+# palette roles
 SURFACE = "#fcfcfb"     # chart surface
 PLANE = "#f9f9f7"       # page plane
 INK = "#0b0b0b"         # primary ink
@@ -27,12 +17,8 @@ SERIES_2 = "#eb6834"    # categorical slot 2, orange
 
 
 def panel_title(ax, title, sub=None, y=1.085, y_sub=1.018):
-    """Title (and optional subtitle) above an axes, in axes coordinates.
-
-    Used instead of ``ax.set_title`` so a subtitle can sit between the title and
-    the plot frame without the two overlapping -- matplotlib places set_title at
-    a fixed pad and knows nothing about extra text drawn near it.
-    """
+    """title + optional subtitle above an axes, avoids ax.set_title so the
+    subtitle doesn't overlap it"""
     ax.text(0, y, title, transform=ax.transAxes, fontsize=11,
             weight="600", color=INK, ha="left", va="bottom")
     if sub:
@@ -41,7 +27,6 @@ def panel_title(ax, title, sub=None, y=1.085, y_sub=1.018):
 
 
 def use_style():
-    """Apply the house style to matplotlib's global rcParams."""
     mpl.rcParams.update({
         "figure.facecolor": PLANE,
         "savefig.facecolor": PLANE,

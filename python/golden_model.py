@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """
-Phase 1b -- bit-exact software model of the Verilog datapath.
+bit-exact model of rtl/rrc_fir_core.v, integer arithmetic only:
+  prod[j] = x[n-j] * h[j]     16x16 -> 32 (Q2.30)
+  acc     = sum_j prod[j]     38-bit (Q8.30)
+  y[n]    = sat16((acc + 2^14) >>> 15)
 
-This is the reference the RTL must match *exactly*, sample for sample.  It
-models integer arithmetic only, mirroring rtl/rrc_fir_core.v:
+no floating point, so any mismatch against the RTL is a real bug
 
-    prod[j]  = x[n-j] * h[j]                 signed 16 x 16 -> 32 (Q2.30)
-    acc      = sum_j prod[j]                 38-bit signed  (Q8.30)
-    y[n]     = sat16((acc + 2^14) >>> 15)    round-half-up, then saturate
-
-Because the arithmetic is exact integer arithmetic at every step, a mismatch
-against the RTL is a real hardware bug and not a floating-point tolerance
-question.  Run from the repository root:
-
-    python python/golden_model.py
+run from repo root: python python/golden_model.py
 """
 
 import argparse
@@ -28,33 +22,27 @@ from dsp_common import Q_FRAC_BITS, read_hex, round_sat, write_hex  # noqa: E402
 
 
 def acc_width(n_taps, prod_w=32):
-    """Accumulator width the RTL uses: product width + log2 growth from summing."""
     return prod_w + int(np.ceil(np.log2(n_taps)))
 
 
 def golden_fir(x_q15, h_q15):
-    """Streaming integer FIR, delay line pre-cleared to zero by synchronous reset.
-
-    Returns the full-precision accumulator per sample (int64), so a caller can
-    check headroom as well as the rounded output.
-    """
+    """streaming integer FIR, delay line starts at zero. returns the
+    full-precision accumulator (int64) so headroom can be checked too."""
     x = np.asarray(x_q15, dtype=np.int64)
     h = np.asarray(h_q15, dtype=np.int64)
-    # np.convolve on int64 is exact integer arithmetic; truncating to the input
-    # length gives the streaming (zero-initialised history) response.
     return np.convolve(x, h)[: x.size]
 
 
 def golden_fir_scalar(x_q15, h_q15):
-    """Literal shift-register transcription of the RTL, used to police the
-    vectorised path above.  O(N*taps) -- only run on a short slice."""
+    """literal shift-register version, used to sanity-check the vectorised
+    one above. O(N*taps), only run on a short slice."""
     x = [int(v) for v in x_q15]
     h = [int(v) for v in h_q15]
     n_taps = len(h)
-    dl = [0] * n_taps                       # cleared by synchronous reset
+    dl = [0] * n_taps
     out = []
     for xv in x:
-        dl = [xv] + dl[:-1]                 # shift_reg[0] holds the newest sample
+        dl = [xv] + dl[:-1]
         out.append(sum(dl[j] * h[j] for j in range(n_taps)))
     return np.array(out, dtype=np.int64)
 
@@ -76,7 +64,6 @@ def main(argv=None):
     if packed.size != meta["num_samples"]:
         raise RuntimeError("sample count %d != num_samples %d" % (packed.size, meta["num_samples"]))
 
-    # Unpack {Q[31:16], I[15:0]} back to signed 16-bit components.
     def unpack(field):
         v = (packed >> field) & 0xFFFF
         return np.where(v & 0x8000, v - 0x10000, v).astype(np.int64)
@@ -86,13 +73,11 @@ def main(argv=None):
     acc_i = golden_fir(i_in, coeff)
     acc_q = golden_fir(q_in, coeff)
 
-    # Cross-check the vectorised model against the literal shift-register model.
     n_chk = min(256, i_in.size)
     ref = golden_fir_scalar(i_in[:n_chk], coeff)
     if not np.array_equal(ref, acc_i[:n_chk]):
         raise AssertionError("vectorised and scalar golden models disagree")
 
-    # Headroom audit: prove the RTL's accumulator width cannot overflow.
     aw = acc_width(meta["n_taps"])
     acc_max = int(max(np.abs(acc_i).max(), np.abs(acc_q).max()))
     theo_max = meta["n_taps"] * (1 << 15) * (1 << 15)

@@ -3,9 +3,7 @@ build/
 *.vvp
 *.vcd
 
-# Generated stimulus, golden vectors and captured output.
-# Everything here is reproducible: ./sim/run_sim.sh regenerates it from a fixed
-# PRNG seed, so it is deliberately not tracked.
+# Generated stimulus/golden vectors/output, rebuilt by run_sim.sh
 data/
 data_clean/
 data_corner/

@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-Phase 3 -- pull the RTL's output.hex back into Python, verify it, measure it,
-and plot it.
+reads output.hex, checks it against the golden model, reports EVM/BER/SNR
+gain, and writes the constellation/tap/eye figures to docs/
 
-Checks the captured stream against the bit-exact golden model, then reports the
-link metrics that actually matter (EVM, BER against theory, matched-filter SNR
-gain) and writes the constellation / tap / eye figures to docs/.
-
-Run from the repository root:  python python/analyze_results.py
+run from repo root: python python/analyze_results.py
 """
 
 import argparse
@@ -29,7 +25,6 @@ from viz_style import (                    # noqa: E402
 
 
 def unpack_iq(packed):
-    """{Q[31:16], I[15:0]} -> (I, Q) as signed int arrays."""
     def field(shift):
         v = (packed >> shift) & 0xFFFF
         return np.where(v & 0x8000, v - 0x10000, v).astype(np.float64)
@@ -37,24 +32,21 @@ def unpack_iq(packed):
 
 
 def qpsk_ber_theory(esn0_db):
-    """Exact QPSK/4-QAM bit error rate over AWGN: Q(sqrt(Es/N0))."""
+    """QPSK BER over AWGN, Q(sqrt(Es/N0))"""
     from scipy.special import erfc
     esn0 = 10.0 ** (np.asarray(esn0_db, dtype=float) / 10.0)
     return 0.5 * erfc(np.sqrt(esn0 / 2.0))
 
 
 def lsq_normalise(rx, ref):
-    """Scale rx so it best matches ref in the least-squares sense.
-
-    alpha = <ref, rx> / <ref, ref> is the standard EVM/AGC normalisation: it
-    removes the arbitrary fixed-point gain without flattering the error.
-    """
+    """least-squares scale of rx onto ref, removes the fixed-point gain
+    without flattering the error (standard EVM normalization)"""
     alpha = np.vdot(ref, rx) / np.vdot(ref, ref)
     return rx / alpha, alpha
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Verify and visualise the RTL output stream.")
+    ap = argparse.ArgumentParser(description="Verify and plot the RTL output stream.")
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--docsdir", default="docs")
     ap.add_argument("--tag", default="", help="prefix for the output figure filenames")
@@ -80,7 +72,6 @@ def main(argv=None):
     rx_offset = meta["sym_offset"]          # TX + RX group delay, in samples
     tx_offset = (n_taps - 1) // 2           # TX group delay only
 
-    # ---- load and verify the RTL stream ---------------------------------
     rtl, n_x = read_hex(meta["out_file"], 32, signed=False)
     gold, _ = read_hex(os.path.join(args.datadir, "golden_output.hex"), 32, signed=False)
     if n_x:
@@ -95,7 +86,6 @@ def main(argv=None):
     symbols = ref["symbols"]
     bits = ref["bits"]
 
-    # ---- decimate to symbol instants -------------------------------------
     n_sym = min(
         (rtl.size - rx_offset - 1) // sps,
         (i_in_all.size - tx_offset - 1) // sps,
@@ -109,7 +99,6 @@ def main(argv=None):
     out_n, _ = lsq_normalise(out_sym, tx_sym)
     in_n, _ = lsq_normalise(in_sym, tx_sym)
 
-    # ---- metrics ----------------------------------------------------------
     def evm_pct(rx):
         return 100.0 * np.sqrt(np.mean(np.abs(rx - tx_sym) ** 2) / np.mean(np.abs(tx_sym) ** 2))
 
@@ -150,22 +139,13 @@ def main(argv=None):
     if args.no_plots:
         return 0
 
-    # ---------------------------------------------------------------------
-    # Figure 1 -- the deliverable: constellation before vs after.
-    # Small multiples on a shared scale, single-series density scatter.  A
-    # constellation is read by position, so colour carries no extra meaning
-    # here and a second hue would be redundant encoding.
-    # ---------------------------------------------------------------------
-    # The "before" panel shows the raw received stream -- every sample, no
-    # timing recovery -- because that is genuinely what arrives on the wire.
-    # It is scaled by the same alpha as the symbol-instant fit so both panels
-    # share an amplitude scale.  Each panel is annotated only with statistics
-    # of the points it actually plots.
     def fig_path(name):
         p = os.path.join(args.docsdir, args.tag + name)
         made.append(os.path.basename(p))
         return p
 
+    # constellation before vs after, shared scale. "before" is every raw
+    # sample with no timing recovery, since that's what's really on the wire.
     if "constellation" in want:
         _, alpha_in = lsq_normalise(in_sym, tx_sym)
         in_all = (i_in_all + 1j * q_in_all) / Q_SCALE / alpha_in
@@ -190,8 +170,7 @@ def main(argv=None):
             ax.axvline(0, color=AXIS, lw=0.8, zorder=1)
             ax.scatter(data.real, data.imag, s=7, c=SERIES_1, alpha=0.28,
                        linewidths=0, zorder=3, rasterized=True)
-            # Ideal QPSK points are a reference overlay drawn in ink, not a
-            # series hue -- annotation must not read as a second data series.
+            # ideal points in ink, not a series color, so they don't read as data
             for sx in (-1, 1):
                 for sy in (-1, 1):
                     ax.plot(sx / np.sqrt(2), sy / np.sqrt(2), marker="+", ms=11,
@@ -214,10 +193,7 @@ def main(argv=None):
         fig.savefig(fig_path("constellation.png"))
         plt.close(fig)
 
-    # ---------------------------------------------------------------------
-    # Figure 2 -- RRC taps, float vs the Q1.15 values burned into the ROM.
-    # Two series, so a legend is present.
-    # ---------------------------------------------------------------------
+    # RRC taps, float vs the Q1.15 values in the ROM
     if "taps" in want:
         taps = ref["taps"]
         coeff = ref["coeff_q15"].astype(np.float64) / Q_SCALE
@@ -250,12 +226,8 @@ def main(argv=None):
         fig.savefig(fig_path("rrc_taps.png"))
         plt.close(fig)
 
-    # ---------------------------------------------------------------------
-    # Figure 3 -- eye diagram of the RTL's in-phase output.
-    # ---------------------------------------------------------------------
-    # At 4 samples/symbol the raw stream is far too coarse to draw an eye, so
-    # the trace is band-limited-interpolated 8x for display only.  This changes
-    # nothing about the data under test -- it is the same thing a scope does.
+    # eye diagram of the in-phase output. raw stream is too coarse at 4
+    # samples/symbol so it's interpolated 8x, display only, doesn't touch the data
     if "eye" in want:
         from scipy.signal import resample_poly
 

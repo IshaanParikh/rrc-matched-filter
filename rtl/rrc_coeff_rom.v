@@ -1,26 +1,11 @@
-//============================================================================
-// rrc_coeff_rom -- root-raised-cosine matched-filter coefficient store.
+// RRC coefficient store. taps come from python/gen_stimulus.py, quantised to
+// Q1.15. presented as one flat bus so the FIR core can slice a constant per
+// tap - each slice folds at synthesis time, turning the booth multipliers
+// into fixed shift/add networks.
 //
-// The taps are produced by python/gen_stimulus.py (unit-energy RRC, quantised
-// to Q1.15).  The whole tap set is presented as one flattened bus so the FIR
-// core can slice a constant coefficient per tap inside a generate loop; each
-// slice constant-folds at synthesis, which is what turns the Booth multipliers
-// into hardwired shift/add networks.
-//
-// Two equivalent implementations, selected at compile time:
-//
-//   default              $readmemh from COEFF_FILE.  The coefficient file is
-//                        written without comment lines so the same file feeds
-//                        both simulation and Quartus ROM inference.
-//
-//   `define RRC_COEFF_CASE
-//                        a literal `case` statement included from
-//                        data/rrc_coeffs_case.vh, for tools that will not
-//                        infer a ROM from $readmemh.  Requires the generated
-//                        file on the include path (iverilog/Quartus: -I data).
-//
-// Both are checked by sim/run_sim.sh, so neither path can rot.
-//============================================================================
+// default is $readmemh from COEFF_FILE. define RRC_COEFF_CASE to use a
+// literal case statement from data/rrc_coeffs_case.vh instead, for tools
+// that won't infer a ROM from $readmemh.
 `timescale 1ns / 1ps
 `include "rrc_defs.vh"
 
@@ -37,11 +22,8 @@ module rrc_coeff_rom #(
     reg [COEFF_WIDTH-1:0] rom [0:N_TAPS-1];
 
 `ifdef RRC_COEFF_CASE
-    // ---- literal case-statement ROM --------------------------------------
-    // An `initial` block, not `always @(*)`: the case statement reads only
-    // constants, so a self-inferred sensitivity list would be empty and the
-    // block would never fire.  A loop-driven initial block is also exactly the
-    // form Quartus infers a constant ROM from.
+    // initial block, not always @(*) - the case only reads constants so an
+    // inferred sensitivity list would be empty and this would never fire
     reg [ADDR_W-1:0]      addr;
     reg [COEFF_WIDTH-1:0] coeff;
     integer a;
@@ -53,7 +35,6 @@ module rrc_coeff_rom #(
         end
     end
 `else
-    // ---- $readmemh ROM ----------------------------------------------------
     initial begin
         $readmemh(COEFF_FILE, rom);
     end
@@ -72,7 +53,7 @@ module rrc_coeff_rom #(
         #0;
         for (c = 0; c < N_TAPS; c = c + 1)
             if (^rom[c] === 1'bx) begin
-                $display("FATAL %m: coefficient %0d is X -- '%s' missing or too short",
+                $display("FATAL %m: coefficient %0d is X, '%s' missing or too short",
                          c, COEFF_FILE);
                 $finish;
             end

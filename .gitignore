@@ -24,6 +24,18 @@ syn/*.jdi
 syn/*.done
 syn/*.smsg
 
+# Quartus also drops the project file/db at the CWD it was run from (repo
+# root), regardless of PROJECT_OUTPUT_DIRECTORY
+/db/
+/incremental_db/
+/*.qpf
+/*.qsf
+/*.qws
+
+# hw_demo: same idea as data/ and syn/output/ above
+hw_demo/output/
+hw_demo/data/
+
 # Python
 __pycache__/
 *.pyc

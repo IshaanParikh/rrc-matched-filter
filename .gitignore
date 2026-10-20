@@ -40,3 +40,8 @@ hw_demo/data/
 __pycache__/
 *.pyc
 .venv/
+
+# hw_demo/dpl: build output, and EPT's library which is theirs to ship
+hw_demo/dpl/output/
+hw_demo/dpl/ept/*
+!hw_demo/dpl/ept/README.md

@@ -27,6 +27,11 @@ All of these come from `./sim/run_sim.sh` on Icarus Verilog 12.0.
 | Link performance | BER 1.10x theoretical QPSK (54 bit errors in 8,174 bits at Es/N0 = 8 dB) |
 | Matched-filter gain | +5.19 dB (EVM 73.3% to 40.3%) |
 
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) goes further: BER from 0 to 11 dB
+against theory, the MER floor, fixed-point loss, dynamic range, frequency
+response, the board results, a 46-run regression matrix and a mutation check
+of the tests themselves.
+
 The BER number is the important one. A filter can match its own model exactly
 and still be the wrong filter. Landing within 10% of the theoretical QPSK bound,
 with the gap well inside the +/-14% one-sigma spread you get from only 54
@@ -122,6 +127,9 @@ filter history is never corrupted. The testbench proves it: 16,412 beats in,
 python/   gen_stimulus.py     QPSK -> RRC -> AWGN -> Q1.15 -> .hex
           golden_model.py     bit-exact integer model of the RTL
           analyze_results.py  verify output.hex, measure EVM/BER, plot
+          perf_analysis.py    BER/MER/dynamic range sweeps -> docs/perf_*.png
+          check_pattern.py    closed-form checks for impulse/step/random runs
+          board_suite.py      stimulus sets through the board, bit-exact + BER
           dsp_common.py       RRC design + fixed-point helpers
           viz_style.py        figure styling
 
@@ -135,6 +143,7 @@ rtl/      rrc_fir_axis.v          AXI4-Stream top level
 sim/      tb_booth_mult.v     multiplier unit test
           tb_rrc_fir_axis.v   data-in-the-loop testbench
           run_sim.sh          full regression
+          run_regress.py      46-run matrix: taps x Es/N0 x seeds x patterns
 
 syn/      rrc_fir.sdc         250 MHz constraints
           build.tcl           Quartus project + compile
@@ -147,6 +156,8 @@ syn/      rrc_fir.sdc         250 MHz constraints
 ./sim/run_sim.sh                 # everything: stimulus, golden, RTL, figures
 DUMP=1 ./sim/run_sim.sh          # also write data/tb_rrc_fir_axis.vcd
 ./sim/run_sim.sh --esn0-db 3     # harsher channel
+python sim/run_regress.py        # the wide matrix, in parallel (~3 min)
+python python/perf_analysis.py   # performance sweeps and figures (~30 s)
 ```
 
 Needs Python with numpy/scipy/matplotlib, and Icarus Verilog (`winget install
@@ -290,6 +301,7 @@ pip install pyserial
 python python/dpl_host.py --port COM14
 python python/dpl_host.py --port COM14 --count 16384   # the whole stimulus
 python python/board_eye.py                             # eye diagram of that run
+python python/board_suite.py --port COM14              # every test set, ~1 min
 ```
 
 `dpl_host.py` clears the filter, sends I samples from

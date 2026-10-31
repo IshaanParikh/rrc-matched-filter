@@ -280,6 +280,8 @@ class Dashboard:
         self.ax_eye.set_xlim(-1, 1)
         self.ax_eye.set_ylim(-1.6, 1.6)
         self.ax_eye.set_xlabel("time (symbols)")
+        for ax in (self.ax_in, self.ax_out, self.ax_eye):
+            ax.grid(True)
         self.eye_lines = []
         self.fig.suptitle(self.filt.name)
         self.status = self.fig.text(0.5, 0.13, "", ha="center")

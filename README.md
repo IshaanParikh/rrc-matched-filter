@@ -29,9 +29,11 @@ at a time over USB, and came back for checking. See
 | Throughput over USB | about 990 samples/s (lockstep UART link, not the filter) |
 
 The BER number is the important one. A filter can match its own model exactly
-and still be the wrong filter. Landing within 2% of the theoretical QPSK bound,
-well inside the +/-14% one-sigma spread you get from only 48 errors, says the
-response really is matched to the transmit pulse.
+and still be the wrong filter. Matching the theoretical QPSK bound, to within
+the +/-14% one-sigma spread you get from only 48 errors, says the response
+really is matched to the transmit pulse. The output SNR of 7.90 dB is within
+0.1 dB of the 8 dB channel, so the 21-tap truncation and fixed-point maths
+cost almost nothing.
 
 | | |
 |---|---|

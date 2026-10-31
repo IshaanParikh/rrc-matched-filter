@@ -3,17 +3,45 @@
 A 33-tap root-raised-cosine matched filter for a QPSK downlink. It is built
 from custom pipelined radix-4 Booth multipliers, wrapped in AXI4-Stream with
 back-pressure, and checked bit-for-bit against a Python model on real modulated
-data.
+data. A 21-tap version runs on a Cyclone IV FPGA board, and every figure
+and number below the line comes from samples sent through that board over USB.
 
-![QPSK constellation before and after the filter](docs/constellation.png)
+![QPSK constellation before and after the filter, from the board](docs/board_constellation.png)
 
-Left is what arrives on the wire: RRC-shaped QPSK at 4 samples/symbol with a
-sample SNR of +2.0 dB. Right is the same stream after the Verilog filter,
-sampled once per symbol. The four clusters come back.
+Left is what goes into the board: RRC-shaped QPSK at 4 samples/symbol on an
+Es/N0 = 8 dB channel, sampled once per symbol. Right is what comes back out of
+the FPGA. The four clusters come back.
 
-## Results
+## Results on the board
 
-All of these come from `./sim/run_sim.sh` on Icarus Verilog 12.0.
+Measured on an EPT DueProLogic (Cyclone IV EP4CE6) running the 21-tap filter.
+All 16,384 samples of the stimulus went through the board on each rail, one
+at a time over USB, and came back for checking. See
+[Running it on the DueProLogic](#running-it-on-the-dueprologic).
+
+| Check | Result |
+|---|---|
+| Board output vs golden model | 0 mismatches in 16,384 I + 16,384 Q samples |
+| Link performance | BER 0.98x theoretical QPSK (48 bit errors in 8,180 bits at Es/N0 = 8 dB) |
+| Matched-filter gain | +5.12 dB (EVM 72.7% to 40.3%) |
+| Resources | 5,439 / 6,272 logic elements (87%), no DSP blocks |
+| Timing | Fmax 156.5 MHz against the board's 66 MHz clock |
+| Throughput over USB | about 990 samples/s (lockstep UART link, not the filter) |
+
+The BER number is the important one. A filter can match its own model exactly
+and still be the wrong filter. Landing within 2% of the theoretical QPSK bound,
+well inside the +/-14% one-sigma spread you get from only 48 errors, says the
+response really is matched to the transmit pulse.
+
+| | |
+|---|---|
+| ![RRC taps on the board](docs/board_taps.png) | ![Eye diagram of the board output](docs/board_eye_diagram.png) |
+
+## Results in simulation
+
+Some properties can't be seen from a board on the end of a USB cable, so the
+full 33-tap AXI4-Stream design is also checked by `./sim/run_sim.sh` on
+Icarus Verilog 12.0.
 
 | Check | Result |
 |---|---|
@@ -24,17 +52,6 @@ All of these come from `./sim/run_sim.sh` on Icarus Verilog 12.0.
 | X-propagation | X at power-up, cleared by the synchronous reset |
 | Saturation coverage | 237 saturating outputs, all bit-exact |
 | Zero-ISI | eye open at the sampling instant on a clean channel |
-| Link performance | BER 1.10x theoretical QPSK (54 bit errors in 8,174 bits at Es/N0 = 8 dB) |
-| Matched-filter gain | +5.19 dB (EVM 73.3% to 40.3%) |
-
-The BER number is the important one. A filter can match its own model exactly
-and still be the wrong filter. Landing within 10% of the theoretical QPSK bound,
-with the gap well inside the +/-14% one-sigma spread you get from only 54
-errors, says the response really is matched to the transmit pulse.
-
-| | |
-|---|---|
-| ![RRC taps](docs/rrc_taps.png) | ![Eye diagram](docs/clean_eye_diagram.png) |
 
 ## How it works
 
@@ -164,11 +181,14 @@ Generated data is not tracked. It rebuilds deterministically from a fixed seed.
 5. Clean channel, for the zero-ISI check
 6. Python analysis: bit-exactness, EVM, BER vs theory, figures
 
-## Synthesis: scripts written, not run
+## Synthesis of the full design: scripts written, not run
 
-Quartus Prime is not installed on the machine this was developed on, so there
-are no Fmax or resource numbers here. Publishing estimates as if they were
-measured would defeat the point. The scripts are ready:
+The 21-tap board build has been compiled and measured (see
+[Results on the board](#results-on-the-board)). The full 33-tap I/Q design
+targets a bigger part, the DE1-SoC's Cyclone V, and has not been through
+Quartus yet, so there are no Fmax or resource numbers for it here. Publishing
+estimates as if they were measured would defeat the point. The scripts are
+ready:
 
 ```bash
 quartus_sh  -t syn/build.tcl            # default device 5CSEMA5F31C6 (DE1-SoC)
@@ -288,8 +308,9 @@ JTAG mode.
 ```bash
 pip install pyserial
 python python/dpl_host.py --port COM14
-python python/dpl_host.py --port COM14 --count 16384   # the whole stimulus
-python python/board_eye.py                             # eye diagram of that run
+python python/dpl_host.py --port COM14 --count 16384               # whole stimulus, I rail
+python python/dpl_host.py --port COM14 --count 16384 --channel q   # and the Q rail
+python python/board_eye.py                                         # figures + BER/EVM
 ```
 
 `dpl_host.py` clears the filter, sends I samples from
@@ -301,10 +322,11 @@ Advanced), or it crawls along at about 60 samples/s. With it set, a 1024-sample
 run on the board takes about a second (969 samples/s) and matches the golden
 model on every sample.
 
-Each run saves what came back to `hw_demo/data/board_output.npz`.
-`board_eye.py` turns that into `docs/board_eye_diagram.png` and prints the
-I-channel EVM and BER. Only I goes through the board, so those numbers are
-per axis.
+The board has one filter channel, so I and Q are two runs. Each run saves
+what came back to `hw_demo/data/board_output_<channel>.npz`. `board_eye.py`
+turns the two into the figures at the top of this README
+(`docs/board_*.png`) and prints the EVM, BER and matched-filter gain. With
+only the I capture it still makes the eye diagram and per-axis numbers.
 
 The protocol is lockstep on purpose. Inside EPT's library the UART receiver
 and the transmit path share one tri-state byte bus, and a byte arriving

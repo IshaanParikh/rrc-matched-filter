@@ -14,7 +14,11 @@ expect ~60 samples/s instead of several hundred.
 
     pip install pyserial
     python python/gen_stimulus.py --span 5 --outdir hw_demo/data
-    python python/dpl_host.py --port COM14
+    python python/dpl_host.py --port COM14 --count 16384
+    python python/board_eye.py
+
+every run saves what came back to hw_demo/data/board_output.npz (even on
+a mismatch or timeout), which board_eye.py turns into an eye diagram.
 
 run from repo root.
 """
@@ -47,6 +51,8 @@ def main(argv=None):
     ap.add_argument("--addr", type=int, default=1, help="SAMPLE_ADDR in dpl_top.v")
     ap.add_argument("--count", type=int, default=1024, help="samples to send (I channel)")
     ap.add_argument("--timeout", type=float, default=2.0)
+    ap.add_argument("--save", default=None,
+                    help="where to save the capture (default: DATADIR/board_output.npz)")
     args = ap.parse_args(argv)
 
     import serial  # pyserial, only needed here
@@ -60,6 +66,13 @@ def main(argv=None):
     expected = round_sat(golden_fir(x, coeff), Q_FRAC_BITS, 16)
 
     reply_hdr = frame(CMD_TRANSFER, args.addr, 0, to_host=True)[0]
+    save_path = args.save or os.path.join(args.datadir, "board_output.npz")
+    got = []
+
+    def save():
+        np.savez(save_path, i_out=np.array(got, dtype=np.int64),
+                 expected=expected[: len(got)])
+        print("capture     : %d samples -> %s" % (len(got), save_path))
 
     with serial.Serial(args.port, args.baud, timeout=args.timeout) as port:
         port.reset_input_buffer()
@@ -69,7 +82,6 @@ def main(argv=None):
         time.sleep(0.05)
         port.reset_input_buffer()
 
-        got = []
         t0 = time.time()
         for xv in x:
             v = int(xv) & 0xFFFF
@@ -77,14 +89,17 @@ def main(argv=None):
             raw = port.read(4)
             if len(raw) < 4:
                 print("timed out after %d of %d samples" % (len(got), x.size))
+                save()
                 return 1
             if raw[0] != reply_hdr or raw[2] != reply_hdr:
                 print("bad frame header at sample %d: %s" % (len(got), raw.hex()))
+                save()
                 return 1
             y = raw[1] | (raw[3] << 8)
             got.append(y - 0x10000 if y & 0x8000 else y)
         dt = time.time() - t0
 
+    save()
     got = np.array(got, dtype=np.int64)
     bad = np.flatnonzero(got != expected)
     print("samples     : %d in %.1f s (%.0f samples/s)" % (x.size, dt, x.size / dt))

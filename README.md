@@ -216,6 +216,7 @@ hw_demo/dpl/  dpl_top.v        board top: USB bytes -> filter -> USB bytes, stat
               ept/             drop EPT's Active Transfer library here (not committed)
               sim/             end-to-end testbench through EPT's real library
 python/       dpl_host.py      streams samples over the COM port, checks them bit for bit
+              board_eye.py     eye diagram, EVM and BER of a dpl_host.py capture
 ```
 
 ### Pins
@@ -287,6 +288,8 @@ JTAG mode.
 ```bash
 pip install pyserial
 python python/dpl_host.py --port COM14
+python python/dpl_host.py --port COM14 --count 16384   # the whole stimulus
+python python/board_eye.py                             # eye diagram of that run
 ```
 
 `dpl_host.py` clears the filter, sends I samples from
@@ -294,7 +297,14 @@ python python/dpl_host.py --port COM14
 against the golden model. Use whichever FT2232H COM port is the UART; the
 other one belongs to EPT-Blaster. Each sample is a round trip, so set the
 port's latency timer to 1 ms (Device Manager > port > Port Settings >
-Advanced), or it crawls along at about 60 samples/s.
+Advanced), or it crawls along at about 60 samples/s. With it set, a 1024-sample
+run on the board takes about a second (969 samples/s) and matches the golden
+model on every sample.
+
+Each run saves what came back to `hw_demo/data/board_output.npz`.
+`board_eye.py` turns that into `docs/board_eye_diagram.png` and prints the
+I-channel EVM and BER. Only I goes through the board, so those numbers are
+per axis.
 
 The protocol is lockstep on purpose. Inside EPT's library the UART receiver
 and the transmit path share one tri-state byte bus, and a byte arriving

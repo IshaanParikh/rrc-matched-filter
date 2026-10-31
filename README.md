@@ -217,6 +217,7 @@ hw_demo/dpl/  dpl_top.v        board top: USB bytes -> filter -> USB bytes, stat
               sim/             end-to-end testbench through EPT's real library
 python/       dpl_host.py      streams samples over the COM port, checks them bit for bit
               board_eye.py     eye diagram, EVM and BER of a dpl_host.py capture
+              live_demo.py     live GUI: constellations, eye and bit-exact scoreboard
 ```
 
 ### Pins
@@ -310,6 +311,44 @@ The protocol is lockstep on purpose. Inside EPT's library the UART receiver
 and the transmit path share one tri-state byte bus, and a byte arriving
 while a reply is going out corrupts it. The testbench caught this; sending
 one sample and waiting for its result never overlaps the two directions.
+
+### Watch it live
+
+![Live demo](docs/live_demo.gif)
+
+```bash
+pip install numpy matplotlib pyserial
+python python/live_demo.py --port COM14      # the board
+python python/live_demo.py                   # no board: the golden model stands in
+```
+
+`live_demo.py` streams endless noisy QPSK through the board and plots the
+results as they come back: the constellation before and after the filter at
+the symbol instants, the eye diagram of the filtered I rail, the I rail
+scrolling past, and a scoreboard. Every board result is checked against the
+golden model, and the bit error rate is tracked against the QPSK bound. The
+Es/N0 slider changes the channel on the fly. Space pauses, `c` clears, `s`
+saves a screenshot. The badge in the corner says LIVE on the board and
+SIMULATION without it; the GIF above is the simulation.
+
+The board has one filter channel, so I and Q take turns. The core is a plain
+FIR, so its whole state is the last 20 inputs. Before each turn the host
+replays that channel's previous 20 samples and drops their outputs, and from
+then on the results are bit for bit what a dedicated channel would give.
+That costs about 15% of the link, so the board runs at roughly 100 symbols/s.
+
+To record it, `--record` renders frames straight to a file instead of opening
+a window. It works with or without `--port`, and `--sweep` walks Es/N0 from
+clean to noisy while it records:
+
+```bash
+python python/live_demo.py --port COM14 --record docs/live_demo.mp4 --frames 300 --sweep 16:5
+ffmpeg -i docs/live_demo.mp4 -vf "fps=12,scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" docs/live_demo.gif
+```
+
+`.gif` output works without ffmpeg (Pillow writes it), it is just larger.
+For a video of the board itself next to the plots, OBS or the Windows
+Game Bar (Win+Alt+R) records the window while it runs.
 
 ### Simulate it
 

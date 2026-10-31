@@ -1,0 +1,31 @@
+{
+ "rows": [
+  {
+   "set": "qpsk_es8",
+   "pattern": "qpsk",
+   "samples": 2048,
+   "requested": 2048,
+   "mismatches": 1,
+   "samples_per_s": 27352.2,
+   "saturated": 0,
+   "ok": false,
+   "symbols": 506,
+   "bit_errors": 6,
+   "ber": 0.011857707509881422,
+   "ber_theory": 0.006004386400163562,
+   "evm_pct": 40.745780860456435
+  },
+  {
+   "set": "random",
+   "pattern": "random",
+   "samples": 4096,
+   "requested": 4096,
+   "mismatches": 1,
+   "samples_per_s": 47939.3,
+   "saturated": 498,
+   "ok": false
+  }
+ ],
+ "total_samples": 6144,
+ "failed": 2
+}

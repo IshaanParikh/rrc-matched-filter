@@ -12,6 +12,10 @@
 //   host trigger bit 0 : clear the filter history and the byte phase, so a
 //                        run starts from the same zero state as
 //                        python/golden_model.py
+//   host trigger bit 1 : at-speed self-test (rrc_bist.v). the filter takes
+//                        an LFSR sample on every clock for 2^BIST_LEN_LOG2
+//                        clocks, then 9 report words come back the same way
+//                        filter outputs do. python/dpl_bist.py checks them.
 //
 // on the wire each active transfer is two UART bytes, {2'b10|2'b11, cmd,
 // addr} then the payload, so one sample costs 4 bytes each way.
@@ -35,7 +39,8 @@ module dpl_top #(
     parameter SAMPLE_ADDR  = 3'h1,
     parameter RESET_COUNT  = 12'h9c8,    // power-on reset, same as EPT's demo
     parameter HEARTBEAT_W  = 26,         // 66 MHz / 2^26 ~ 1 Hz blink
-    parameter BUSY_TIMEOUT = 20'hfffff   // ~16 ms, escape hatch if the library never answers
+    parameter BUSY_TIMEOUT = 20'hfffff,  // ~16 ms, escape hatch if the library never answers
+    parameter BIST_LEN_LOG2 = 20         // self-test length, 2^20 samples = 16 ms at 66 MHz
 ) (
     input  wire       CLK_66MHZ,         // PIN_23, 66 MHz osc on GCLK1 (EPT calls it aa[1])
     input  wire       RST,               // PIN_89, pulled up to 3V3 on the board, low = reset
@@ -138,15 +143,20 @@ module dpl_top #(
     // host trigger bit 0 -> clear. trigger_to_device is combinational off
     // UC_IN and only lasts a few cycles, so edge-detect it.
     //------------------------------------------------------------------
-    reg trig0_d;
+    reg trig0_d, trig1_d;
     reg clear;
+    reg bist_start;
     always @(posedge CLK_66MHZ or negedge rst_n) begin
         if (!rst_n) begin
-            trig0_d <= 1'b0;
-            clear   <= 1'b0;
+            trig0_d    <= 1'b0;
+            trig1_d    <= 1'b0;
+            clear      <= 1'b0;
+            bist_start <= 1'b0;
         end else begin
-            trig0_d <= trigger_from_host[0];
-            clear   <= trigger_from_host[0] & ~trig0_d;
+            trig0_d    <= trigger_from_host[0];
+            trig1_d    <= trigger_from_host[1];
+            clear      <= trigger_from_host[0] & ~trig0_d;
+            bist_start <= trigger_from_host[1] & ~trig1_d;
         end
     end
 
@@ -187,14 +197,46 @@ module dpl_top #(
     end
 
     //------------------------------------------------------------------
-    // the filter. pipe_en stays high: samples arrive thousands of cycles
-    // apart, the delay line only moves on sample_en, and dout settles
-    // LATENCY cycles after each one and then holds.
+    // at-speed self-test. while it runs it owns the filter's input and
+    // samples from the host are ignored.
+    //------------------------------------------------------------------
+    wire                         bist_active, bist_clr, bist_en, bist_done;
+    wire signed [DATA_WIDTH-1:0] bist_din;
+    wire [31:0]                  bist_crc, bist_n_out, bist_cycles, bist_n_sat;
+    wire signed [DATA_WIDTH-1:0] dout;
+
+    rrc_bist #(
+        .DATA_WIDTH (DATA_WIDTH),
+        .LATENCY    (LATENCY),
+        .LEN_LOG2   (BIST_LEN_LOG2)
+    ) u_bist (
+        .clk       (CLK_66MHZ),
+        .rst_n     (rst_n),
+        .start     (bist_start),
+        .abort     (clear),
+        .active    (bist_active),
+        .core_clr  (bist_clr),
+        .sample_en (bist_en),
+        .din       (bist_din),
+        .dout      (dout),
+        .done      (bist_done),
+        .crc       (bist_crc),
+        .n_out     (bist_n_out),
+        .cycles    (bist_cycles),
+        .n_sat     (bist_n_sat)
+    );
+
+    wire                         host_en   = sample_en & ~bist_active;
+    wire                         core_en   = bist_active ? bist_en  : sample_en;
+    wire signed [DATA_WIDTH-1:0] core_din  = bist_active ? bist_din : sample;
+
+    //------------------------------------------------------------------
+    // the filter. pipe_en stays high: host samples arrive thousands of
+    // cycles apart, the delay line only moves on sample_en, and dout
+    // settles LATENCY cycles after each one and then holds.
     //------------------------------------------------------------------
     reg  filt_rst_n;
-    always @(posedge CLK_66MHZ) filt_rst_n <= rst_n & ~clear;
-
-    wire signed [DATA_WIDTH-1:0] dout;
+    always @(posedge CLK_66MHZ) filt_rst_n <= rst_n & ~clear & ~bist_clr;
 
     rrc_fir_core #(
         .N_TAPS      (N_TAPS),
@@ -204,9 +246,9 @@ module dpl_top #(
     ) u_core (
         .clk       (CLK_66MHZ),
         .rst_n     (filt_rst_n),
-        .sample_en (sample_en),
+        .sample_en (core_en),
         .pipe_en   (1'b1),
-        .din       (sample),
+        .din       (core_din),
         .dout      (dout)
     );
 
@@ -214,9 +256,53 @@ module dpl_top #(
     always @(posedge CLK_66MHZ or negedge rst_n) begin
         if (!rst_n)     valid_pipe <= {LATENCY{1'b0}};
         else if (clear) valid_pipe <= {LATENCY{1'b0}};
-        else            valid_pipe <= {valid_pipe[LATENCY-2:0], sample_en};
+        else            valid_pipe <= {valid_pipe[LATENCY-2:0], host_en};
     end
     wire out_valid = valid_pipe[LATENCY-1];
+
+    //------------------------------------------------------------------
+    // self-test report: when a run finishes, queue 9 words into the output
+    // buffer one at a time: 0xB157, then crc, n_out, cycles, n_sat as
+    // low/high halves
+    //------------------------------------------------------------------
+    reg        bist_done_d;
+    reg        rpt_active;
+    reg  [3:0] rpt_idx;
+    reg  [DATA_WIDTH-1:0] rpt_word;
+    wire       rpt_load;
+
+    always @(*) begin
+        case (rpt_idx)
+            4'd0:    rpt_word = 16'hB157;
+            4'd1:    rpt_word = bist_crc[15:0];
+            4'd2:    rpt_word = bist_crc[31:16];
+            4'd3:    rpt_word = bist_n_out[15:0];
+            4'd4:    rpt_word = bist_n_out[31:16];
+            4'd5:    rpt_word = bist_cycles[15:0];
+            4'd6:    rpt_word = bist_cycles[31:16];
+            4'd7:    rpt_word = bist_n_sat[15:0];
+            default: rpt_word = bist_n_sat[31:16];
+        endcase
+    end
+
+    always @(posedge CLK_66MHZ or negedge rst_n) begin
+        if (!rst_n) begin
+            bist_done_d <= 1'b0;
+            rpt_active  <= 1'b0;
+            rpt_idx     <= 4'd0;
+        end else begin
+            bist_done_d <= bist_done;
+            if (clear) begin
+                rpt_active <= 1'b0;
+            end else if (bist_done && !bist_done_d) begin
+                rpt_active <= 1'b1;
+                rpt_idx    <= 4'd0;
+            end else if (rpt_load) begin
+                if (rpt_idx == 4'd8) rpt_active <= 1'b0;
+                rpt_idx <= rpt_idx + 1'b1;
+            end
+        end
+    end
 
     //------------------------------------------------------------------
     // one-deep output buffer. with a lockstep host the previous result is
@@ -245,8 +331,13 @@ module dpl_top #(
             end
         end else if (out_taken) begin
             out_pending <= 1'b0;
+        end else if (rpt_load) begin
+            out_word    <= rpt_word;
+            out_pending <= 1'b1;
         end
     end
+
+    assign rpt_load = rpt_active && !out_pending && !out_taken && !out_valid && !clear;
 
     //------------------------------------------------------------------
     // result -> host. per byte: hold start_transfer for START_HOLD cycles,
@@ -341,7 +432,7 @@ module dpl_top #(
             out_toggle <= 1'b0;
         end else begin
             heartbeat <= heartbeat + 1'b1;
-            if (sample_en) in_toggle  <= ~in_toggle;
+            if (host_en)   in_toggle  <= ~in_toggle;
             if (out_taken) out_toggle <= ~out_toggle;
         end
     end

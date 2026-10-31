@@ -33,7 +33,7 @@ if [ ! -f hw_demo/data/rrc_coeffs.hex ]; then
     "$PYTHON" python/gen_stimulus.py --span 5 --outdir hw_demo/data
 fi
 
-RTL="hw_demo/dpl/dpl_top.v rtl/rrc_fir_core.v rtl/rrc_coeff_rom.v
+RTL="hw_demo/dpl/dpl_top.v hw_demo/dpl/rrc_bist.v rtl/rrc_fir_core.v rtl/rrc_coeff_rom.v
      rtl/pipelined_adder_tree.v rtl/booth_mult_r4.v"
 
 # eptWireOR.v ends with `default_nettype none, so it goes last
@@ -43,7 +43,11 @@ for f in $EPT_FILES; do EPT_SRCS="$EPT_SRCS $EPT/$f"; done
 PLUS=""
 [ "${DUMP:-0}" = "1" ] && PLUS="+dump"
 
-mkdir -p build
-"$IVERILOG" -g2005 -I rtl -I "$EPT" -o build/tb_dpl_top.vvp \
+# expected self-test report at a short length (the board runs 2^20)
+mkdir -p build/bist
+"$PYTHON" python/dpl_bist.py --model-only --len-log2 10 \
+    --write-vh build/bist/bist_expected.vh
+
+"$IVERILOG" -g2005 -I rtl -I "$EPT" -I build/bist -o build/tb_dpl_top.vvp \
     hw_demo/dpl/sim/tb_dpl_top.v $RTL $EPT_SRCS
 "$VVP" build/tb_dpl_top.vvp $PLUS

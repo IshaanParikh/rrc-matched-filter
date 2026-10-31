@@ -9,7 +9,12 @@
 //
 // the library's baud divider is a module parameter, so it's overridden here
 // to keep the run short. the framing and every state machine are unchanged.
+//
+// it also runs the at-speed self-test (trigger bit 1) at a short length and
+// checks the 9-word report against python/dpl_bist.py's prediction, which
+// run_dpl_sim.sh writes to build/bist/bist_expected.vh.
 `timescale 1ns / 1ps
+`include "bist_expected.vh"
 
 module tb_dpl_top;
 
@@ -38,7 +43,8 @@ module tb_dpl_top;
         .COEFF_FILE  (COEFF_FILE),
         .SAMPLE_ADDR (ADDR),
         .RESET_COUNT (12'd40),
-        .HEARTBEAT_W (8)
+        .HEARTBEAT_W (8),
+        .BIST_LEN_LOG2 (`BIST_EXP_LEN_LOG2)
     ) dut (
         .CLK_66MHZ (clk),
         .RST       (rst_pin),
@@ -119,6 +125,13 @@ module tb_dpl_top;
                 @(posedge clk);
                 guard = guard + 1;
             end
+        end
+    endtask
+
+    task expect_word(input [15:0] w);
+        begin
+            expected[n_expected] = w;
+            n_expected = n_expected + 1;
         end
     endtask
 
@@ -220,6 +233,23 @@ module tb_dpl_top;
         clear_history;
         send_sample(16'sh4000);
         for (i = 1; i < 6; i = i + 1)
+            send_sample(16'sd0);
+
+        // at-speed self-test: 9 report words come back like filter outputs
+        expect_word(16'hB157);
+        expect_word(`BIST_EXP_CRC & 16'hFFFF);    expect_word(`BIST_EXP_CRC >> 16);
+        expect_word(`BIST_EXP_N_OUT & 16'hFFFF);  expect_word(`BIST_EXP_N_OUT >> 16);
+        expect_word(`BIST_EXP_CYCLES & 16'hFFFF); expect_word(`BIST_EXP_CYCLES >> 16);
+        expect_word(`BIST_EXP_N_SAT & 16'hFFFF);  expect_word(`BIST_EXP_N_SAT >> 16);
+        send_trigger(8'h02);
+        wait_outputs;
+
+        // and the host path still works afterwards, from a clean state
+        send_trigger(8'h01);
+        repeat (4 * BIT_CYC) @(posedge clk);
+        clear_history;
+        send_sample(16'sh7fff);
+        for (i = 1; i < 4; i = i + 1)
             send_sample(16'sd0);
 
         if (n_got != n_expected) begin

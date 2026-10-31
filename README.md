@@ -217,6 +217,7 @@ hw_demo/dpl/  dpl_top.v        board top: USB bytes -> filter -> USB bytes, stat
               sim/             end-to-end testbench through EPT's real library
 python/       dpl_host.py      streams samples over the COM port, checks them bit for bit
               board_eye.py     eye diagram, EVM and BER of a dpl_host.py capture
+              live_demo.py     live plots: constellations, eye, bit-exact check
 ```
 
 ### Pins
@@ -310,6 +311,23 @@ The protocol is lockstep on purpose. Inside EPT's library the UART receiver
 and the transmit path share one tri-state byte bus, and a byte arriving
 while a reply is going out corrupts it. The testbench caught this; sending
 one sample and waiting for its result never overlaps the two directions.
+
+### Watch it live
+
+![Live demo](docs/live_demo.gif)
+
+```bash
+pip install numpy matplotlib pyserial
+python python/live_demo.py --port COM14      # the board
+python python/live_demo.py                   # no board, golden model stands in
+python python/live_demo.py --port COM14 --record docs/live_demo.gif --frames 300 --sweep 16:5
+```
+
+Streams noisy QPSK through the board and plots the constellation before and
+after the filter, the eye diagram, and the bit-exact check against the golden
+model. I and Q share the one filter channel: before each turn the host
+replays that channel's last 20 samples, which restores the FIR state exactly.
+The GIF above is from the simulation.
 
 ### Simulate it
 

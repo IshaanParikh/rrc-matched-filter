@@ -15,10 +15,12 @@ expect ~60 samples/s instead of several hundred.
     pip install pyserial
     python python/gen_stimulus.py --span 5 --outdir hw_demo/data
     python python/dpl_host.py --port COM14 --count 16384
+    python python/dpl_host.py --port COM14 --count 16384 --channel q
     python python/board_eye.py
 
-every run saves what came back to hw_demo/data/board_output.npz (even on
-a mismatch or timeout), which board_eye.py turns into an eye diagram.
+the board has one filter channel, so I and Q are separate runs. every run
+saves what came back to hw_demo/data/board_output_<channel>.npz (even on a
+mismatch or timeout), which board_eye.py turns into the README figures.
 
 run from repo root.
 """
@@ -49,10 +51,11 @@ def main(argv=None):
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--datadir", default="hw_demo/data")
     ap.add_argument("--addr", type=int, default=1, help="SAMPLE_ADDR in dpl_top.v")
-    ap.add_argument("--count", type=int, default=1024, help="samples to send (I channel)")
+    ap.add_argument("--count", type=int, default=1024, help="samples to send")
+    ap.add_argument("--channel", choices=("i", "q"), default="i", help="which rail of the stimulus to send")
     ap.add_argument("--timeout", type=float, default=2.0)
     ap.add_argument("--save", default=None,
-                    help="where to save the capture (default: DATADIR/board_output.npz)")
+                    help="where to save the capture (default: DATADIR/board_output_CHANNEL.npz)")
     args = ap.parse_args(argv)
 
     import serial  # pyserial, only needed here
@@ -61,16 +64,16 @@ def main(argv=None):
     packed, n_unknown = read_hex(os.path.join(args.datadir, "qpsk_noisy_iq.hex"), 32, signed=False)
     if n_unknown:
         raise RuntimeError("stimulus contains x/z words")
-    x = (packed & 0xFFFF).astype(np.int64)
+    x = ((packed >> (16 if args.channel == "q" else 0)) & 0xFFFF).astype(np.int64)
     x = np.where(x & 0x8000, x - 0x10000, x)[: args.count]
     expected = round_sat(golden_fir(x, coeff), Q_FRAC_BITS, 16)
 
     reply_hdr = frame(CMD_TRANSFER, args.addr, 0, to_host=True)[0]
-    save_path = args.save or os.path.join(args.datadir, "board_output.npz")
+    save_path = args.save or os.path.join(args.datadir, "board_output_%s.npz" % args.channel)
     got = []
 
     def save():
-        np.savez(save_path, i_out=np.array(got, dtype=np.int64),
+        np.savez(save_path, out=np.array(got, dtype=np.int64),
                  expected=expected[: len(got)])
         print("capture     : %d samples -> %s" % (len(got), save_path))
 

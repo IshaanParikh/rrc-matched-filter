@@ -233,6 +233,7 @@ EP4CE6, which is why this uses the same scoped-down core as `hw_demo/`.
 ```
 hw_demo/dpl/  dpl_top.v        board top: USB bytes -> filter -> USB bytes, status LEDs
               dpl_pins.tcl     pin assignments, each one traced to EPT's datasheet/schematic/.qsf
+              rrc_bist.v       at-speed self-test: LFSR into the filter every clock, CRC out
               dpl.sdc          66 MHz clock
               build.tcl        Quartus project + compile, writes .sof and .pof
               ept/             drop EPT's Active Transfer library here (not committed)
@@ -240,6 +241,7 @@ hw_demo/dpl/  dpl_top.v        board top: USB bytes -> filter -> USB bytes, stat
 python/       dpl_host.py      streams samples over the COM port, checks them bit for bit
               board_eye.py     eye diagram, EVM and BER of a dpl_host.py capture
               live_demo.py     live plots: constellations, eye, bit-exact check
+              dpl_bist.py      runs the at-speed self-test and checks its CRC
 ```
 
 ### Pins
@@ -353,6 +355,32 @@ model. I and Q share the one filter channel: before each turn the host
 replays that channel's last 20 samples, which restores the FIR state exactly.
 The GIF above is from the simulation.
 
+### At-speed self-test
+
+Everything above feeds the filter one sample per USB round trip, about one
+every millisecond, so the board never has to produce outputs back to back.
+Host trigger bit 1 runs a self-test that does: the filter is cleared, then
+takes a sample from a 32-bit LFSR on every 66 MHz clock for 2^20 clocks
+(16 ms). Every output goes into a CRC-32, and a 9-word report comes back
+over the link.
+
+```bash
+python python/dpl_bist.py --port COM14              # one run
+python python/dpl_bist.py --port COM14 --runs 100   # 100M samples, ~10 s
+python python/dpl_bist.py --model-only              # what the board should say
+```
+
+`dpl_bist.py` computes the same LFSR, filter and CRC from the bit-exact
+model. A pass means all 1,048,576 outputs were right with the filter running
+flat out. The report also carries the cycle count, from the first input to
+the last output, which must be exactly 2^20 + 11 (no gaps). It also counts
+outputs on a rail: the LFSR is uniform over the full 16-bit range, so about
+8% of outputs saturate.
+
+`./hw_demo/dpl/sim/run_bist_sim.sh` checks the self-test against the model
+in simulation without EPT's library. `run_dpl_sim.sh` runs it through the
+whole board top level as well.
+
 ### Simulate it
 
 ```bash
@@ -362,5 +390,6 @@ The GIF above is from the simulation.
 This runs the real board top level and EPT's real library from the UART pins
 inward. A host model speaks EPT's framing, sends an impulse, random samples
 with both rails, then a clear and a second impulse, and checks every result
-against a reference FIR. The library's baud divider is sped up 4.5x so the
+against a reference FIR. It then runs a short self-test and checks the
+report. The library's baud divider is sped up 4.5x so the
 run is short; nothing else changes.

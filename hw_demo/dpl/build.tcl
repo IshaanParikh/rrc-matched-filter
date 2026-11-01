@@ -79,6 +79,7 @@ set_global_assignment -name SEARCH_PATH $ept_dir
 
 foreach f {
     hw_demo/dpl/dpl_top.v
+    hw_demo/dpl/rrc_bist.v
     rtl/rrc_fir_core.v
     rtl/rrc_coeff_rom.v
     rtl/pipelined_adder_tree.v

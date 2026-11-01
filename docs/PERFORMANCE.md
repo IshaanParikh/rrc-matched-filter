@@ -26,7 +26,7 @@ python python/board_suite.py --port COM14   # on the board, about a minute
 | Stopband attenuation | 34.8 dB | 31.3 dB |
 | Input range with BER within 10% of theory (8 dB) | over 70 dB (6e-4 to 2x full scale) | same |
 | Input range with MER within 1 dB of float (40 dB) | 50 dB (1.3e-3 to 0.4 of full scale) | 54 dB |
-| Hardware | not built (14k LEs, too big for the EP4CE6) | bit-exact, BER 0.0059 vs 0.0060 theory |
+| Hardware | not built (14k LEs, too big for the EP4CE6) | bit-exact over USB (62k samples) and at the full 66 MHz clock (105M samples) |
 
 The short version: the filter is a matched filter to within what Monte
 Carlo can resolve, Q1.15 costs nothing measurable, and the only thing that
@@ -135,16 +135,24 @@ FT2232H's 1 ms latency timer adding a USB turnaround to every sample. That
 is also why the default 16 ms timer gives about 60 samples/s. The host
 protocol is the bottleneck, not the filter.
 
-### What the board tests do not cover yet
+### At-speed self-test (2026-11-01)
 
-Every board sample so far arrives thousands of clocks after the previous
-one. The delay line moves only on `sample_en`, and the pipeline sits idle in
-between. So silicon has proven the arithmetic but not back-to-back
-operation at clock rate. Static timing analysis says it has 2.4x of margin
-there, but nothing has measured it. An on-chip self-test would close that
-gap: an LFSR feeding the filter one sample per clock at 66 MHz, a CRC over
-the outputs, and the host comparing the CRC against Python. That fits in
-the 833 LEs that are left.
+Every host sample arrives thousands of clocks after the one before it, so
+the link alone never makes the filter work back to back. The self-test
+(`hw_demo/dpl/rrc_bist.v`, host trigger bit 1) does. It feeds the filter an
+LFSR sample on every 66 MHz clock for 2^20 clocks and sends back a CRC-32 of
+every output.
+
+| | Result |
+|---|---|
+| Runs | 100 of 100 pass, 104,857,600 outputs checked against the bit-exact model |
+| CRC-32 | 0x1da7fd64, the same as the model on every run |
+| Cycles, first input to last output | 1,048,587 = 2^20 + 11 latency, so there were no gaps |
+| Saturated outputs | 87,249 (8.32%), the same as the model |
+| Cost | 393 LEs (5,832 / 6,272 total, 93%); Fmax 152.0 MHz, +8.6 ns slack at 66 MHz |
+
+So the silicon computes every output correctly at the full clock rate, not
+just at USB speed.
 
 ## 6. Simulation coverage
 
@@ -207,6 +215,24 @@ python python/board_suite.py --port COM14 --soak 100000        # adds ~100 s
 ```
 
 It prints a Markdown table and writes `hw_demo/suite/board_summary.json`.
-The suite was tested against a software model of the board's byte protocol,
-including one with a single corrupted output word, which it reported as a
-failure.
+First run on the board, 2026-11-01: 45,935 samples, 0 mismatches, and all 9
+sets pass.
+
+| set | samples | mismatches | saturated | samples/s | I BER (theory) | I EVM |
+|---|---|---|---|---|---|---|
+| qpsk_es0 | 8192 | 0 | 0 | 966 | 0.1552 (0.1587) | 99.8% |
+| qpsk_es4 | 8192 | 0 | 0 | 961 | 0.0539 (0.0565) | 63.8% |
+| qpsk_es8 | 8192 | 0 | 0 | 967 | 0.0073 (0.0060) | 39.6% |
+| qpsk_es12 | 8192 | 0 | 1 | 966 | 0.0000 (0.0000) | 24.2% |
+| corner | 396 | 0 | 134 | 689 | | |
+| impulse | 168 | 0 | 0 | 488 | | |
+| step | 315 | 0 | 126 | 642 | | |
+| random | 4096 | 0 | 498 | 947 | | |
+| repeat | 8192 | 0 | 0 | 962 | 0.0073 (0.0060) | 39.6% |
+
+The QPSK BERs are I-channel only, about 2,040 bits per set. The 8 dB point
+is 15 errors where 12 are expected, inside the spread for counts that small.
+
+Before that, the suite was tested against a software model of the board's
+byte protocol, including one with a single corrupted output word, which it
+reported as a failure.

@@ -45,3 +45,6 @@ __pycache__/
 hw_demo/dpl/output/
 hw_demo/dpl/ept/*
 !hw_demo/dpl/ept/README.md
+
+# board_suite.py output
+hw_demo/suite/

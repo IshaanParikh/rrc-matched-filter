@@ -66,11 +66,28 @@ module tb_rrc_fir_axis;
     reg bp_enable  = 1'b0;
     reg gap_enable = 1'b0;
 
+    // +seed=N picks a different back-pressure / gap pattern. without it the
+    // pattern is the global $random stream, same as it always was
+    integer seed     = 0;
+    reg     use_seed = 1'b0;
+    initial if ($value$plusargs("seed=%d", seed)) begin
+        use_seed = 1'b1;
+        $display("[tb] stall seed %0d", seed);
+    end
+
+    function integer rnd;
+        input dummy;
+        begin
+            if (use_seed) rnd = $random(seed);
+            else          rnd = $random;
+        end
+    endfunction
+
     // random TREADY once bp_enable is set
     always @(negedge clk) begin
         if (!rst_n)          m_axis_tready <= 1'b1;
         else if (!bp_enable) m_axis_tready <= 1'b1;
-        else                 m_axis_tready <= (({$random} % 100) < 65);
+        else                 m_axis_tready <= (({rnd(0)} % 100) < 65);
     end
 
     always @(posedge clk)
@@ -214,8 +231,8 @@ module tb_rrc_fir_axis;
             end
 
             // random idle gaps on the source
-            if (gap_enable && (({$random} % 100) < 25)) begin
-                ngap = 1 + ({$random} % 3);
+            if (gap_enable && (({rnd(0)} % 100) < 25)) begin
+                ngap = 1 + ({rnd(0)} % 3);
                 for (gi = 0; gi < ngap; gi = gi + 1) begin
                     @(negedge clk);
                     s_axis_tvalid = 1'b0;

@@ -53,6 +53,40 @@ def corner_stream():
     return (np.asarray(i, dtype=np.int32), np.asarray(q, dtype=np.int32))
 
 
+def impulse_stream(n_taps):
+    """isolated -1.0 impulses (code -32768, exactly representable) on both
+    channels. the output after each one must be the negated coefficient ROM,
+    word for word, since (-32768*c + 2^14) >> 15 == -c exactly"""
+    gap = 2 * n_taps
+    i = np.zeros(4 * gap, dtype=np.int32)
+    i[gap // 2::gap] = Q_MIN
+    q = np.roll(i, gap // 4)
+    return i, q
+
+
+def step_stream(n_taps):
+    """-1.0 steps, held long enough to settle, then released. the output
+    climbs through the running sum of the taps and settles at -sum(h),
+    clamped"""
+    seg = 3 * n_taps
+    i = np.concatenate([np.zeros(seg), np.full(seg, Q_MIN), np.zeros(seg),
+                        np.full(seg, Q_MAX), np.zeros(seg)]).astype(np.int32)
+    q = -i.astype(np.int64)
+    return i, np.clip(q, Q_MIN, Q_MAX).astype(np.int32)
+
+
+def random_stream(rng, n):
+    """uniform over the whole 16-bit range with the rails over-weighted,
+    so saturation fires constantly in both directions"""
+    def one():
+        x = rng.integers(Q_MIN, Q_MAX + 1, size=n)
+        rail = rng.random(n)
+        x[rail < 0.05] = Q_MIN
+        x[rail > 0.95] = Q_MAX
+        return x.astype(np.int32)
+    return one(), one()
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         description="Generate QPSK + RRC + AWGN stimulus for the Verilog RRC FIR.",
@@ -72,8 +106,11 @@ def build_parser():
                    help="ceiling for the 99.99th-percentile matched-filter OUTPUT magnitude")
     p.add_argument("--seed", type=int, default=0xB0071, help="PRNG seed (reproducible stimulus)")
     p.add_argument("--outdir", default="data", help="output directory")
-    p.add_argument("--pattern", choices=("qpsk", "corner"), default="qpsk",
-                   help="qpsk = the link stimulus; corner = fixed-point rail stress")
+    p.add_argument("--pattern", choices=("qpsk", "corner", "impulse", "step", "random"),
+                   default="qpsk",
+                   help="qpsk = the link stimulus; corner = fixed-point rail stress; "
+                        "impulse/step = known closed-form responses; "
+                        "random = full-scale random words (num-symbols*sps of them)")
     return p
 
 
@@ -125,9 +162,16 @@ def main(argv=None):
     n_samples = i_q15.size
     clip_pct = 100.0 * (clip_i + clip_q) / (2 * n_samples)
 
-    # corner pattern replaces the link stimulus, rest below is shared
-    if args.pattern == "corner":
-        i_q15, q_q15 = corner_stream()
+    # the other patterns replace the link stimulus, rest below is shared
+    if args.pattern != "qpsk":
+        if args.pattern == "corner":
+            i_q15, q_q15 = corner_stream()
+        elif args.pattern == "impulse":
+            i_q15, q_q15 = impulse_stream(n_taps)
+        elif args.pattern == "step":
+            i_q15, q_q15 = step_stream(n_taps)
+        else:
+            i_q15, q_q15 = random_stream(rng, n_sym * sps)
         n_samples = i_q15.size
         clip_pct = 0.0
         n_sym = 0                 # not a symbol stream
@@ -176,6 +220,7 @@ def main(argv=None):
         "beta": float(args.beta),
         "esn0_db": float(args.esn0_db),
         "seed": int(args.seed),
+        "pattern": args.pattern,
         "scale": float(scale),
         "sym_offset": int(sym_offset),
         "data_width": 16,
@@ -214,10 +259,9 @@ def main(argv=None):
         taps=h, coeff_q15=coeff_q15, i_q15=i_q15, q_q15=q_q15, scale=scale,
     )
 
-    if args.pattern == "corner":
-        print("Fixed-point corner-case stimulus generated")
-        print("  samples            : %d  (rails, fastest swing, impulses, +/-1 LSB)"
-              % n_samples)
+    if args.pattern != "qpsk":
+        print("%s stimulus generated" % args.pattern)
+        print("  samples            : %d" % n_samples)
     else:
         print("QPSK/RRC/AWGN stimulus generated")
         print("  symbols            : %d  (%d samples @ %d sps)" % (n_sym, n_samples, sps))

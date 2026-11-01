@@ -55,6 +55,11 @@ Icarus Verilog 12.0.
 | Saturation coverage | 237 saturating outputs, all bit-exact |
 | Zero-ISI | eye open at the sampling instant on a clean channel |
 
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) goes further: BER from 0 to 11 dB
+against theory, the MER floor, fixed-point loss, dynamic range, frequency
+response, a 46-run regression matrix, a mutation check of the tests
+themselves, and the board test suite and at-speed self-test results.
+
 ## How it works
 
 ```
@@ -141,6 +146,9 @@ filter history is never corrupted. The testbench proves it: 16,412 beats in,
 python/   gen_stimulus.py     QPSK -> RRC -> AWGN -> Q1.15 -> .hex
           golden_model.py     bit-exact integer model of the RTL
           analyze_results.py  verify output.hex, measure EVM/BER, plot
+          perf_analysis.py    BER/MER/dynamic range sweeps -> docs/perf_*.png
+          check_pattern.py    closed-form checks for impulse/step/random runs
+          board_suite.py      stimulus sets through the board, bit-exact + BER
           dsp_common.py       RRC design + fixed-point helpers
           viz_style.py        figure styling
 
@@ -154,6 +162,7 @@ rtl/      rrc_fir_axis.v          AXI4-Stream top level
 sim/      tb_booth_mult.v     multiplier unit test
           tb_rrc_fir_axis.v   data-in-the-loop testbench
           run_sim.sh          full regression
+          run_regress.py      46-run matrix: taps x Es/N0 x seeds x patterns
 
 syn/      rrc_fir.sdc         250 MHz constraints
           build.tcl           Quartus project + compile
@@ -166,6 +175,8 @@ syn/      rrc_fir.sdc         250 MHz constraints
 ./sim/run_sim.sh                 # everything: stimulus, golden, RTL, figures
 DUMP=1 ./sim/run_sim.sh          # also write data/tb_rrc_fir_axis.vcd
 ./sim/run_sim.sh --esn0-db 3     # harsher channel
+python sim/run_regress.py        # the wide matrix, in parallel (~3 min)
+python python/perf_analysis.py   # performance sweeps and figures (~30 s)
 ```
 
 Needs Python with numpy/scipy/matplotlib, and Icarus Verilog (`winget install
@@ -316,6 +327,7 @@ python python/dpl_host.py --port COM14
 python python/dpl_host.py --port COM14 --count 16384               # whole stimulus, I rail
 python python/dpl_host.py --port COM14 --count 16384 --channel q   # and the Q rail
 python python/board_eye.py                                         # figures + BER/EVM
+python python/board_suite.py --port COM14                          # every test set, ~1 min
 ```
 
 `dpl_host.py` clears the filter, sends I samples from
